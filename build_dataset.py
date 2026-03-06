@@ -40,15 +40,31 @@ class dataset_for_classification(torch.utils.data.Dataset):
         self.words = words
 
     def __getitem__(self, index):
-        # get image matrix and transform to tensor
-        path = self.path_to_images[index]
-        img = self.loader(self.path_img + path + '.jpg')
+        # 讀取 4 個臨床視野指標作為regression目標
+        line = self.path_to_images[index].strip()
+        parts = line.split('\t')
+
+        path = parts[0]
+        vfi = float(parts[1])
+        md  = float(parts[2])
+        psd = float(parts[3])
+        ght = float(parts[4])
+
+        img = self.loader(path)
+
         label = self.img_label[index]
+
         if self.transform is not None:
             img = self.transform(img)
-        # get index vector for gru input
-        words = self.words[label]
-        return [img, words], label
+
+        # 從文字類別標簽改爲預測連續的臨床數值
+        # 讀取這張影像對應的 4 個視野數值，
+        # 並組成一個向量作為「正確答案」。
+        # 模型的任務是：從影像預測這 4 個數值。
+        vf_vec = torch.tensor([vfi, md, psd, ght], dtype=torch.float32)
+
+        #return vf_vec而不是之前會用到mat file的words
+        return [img, vf_vec], label
     
     def __len__(self):
         return len(self.path_to_images)

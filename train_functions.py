@@ -21,17 +21,15 @@ def lr_scheduler(epoch, optimizer, lr_decay_iter, decay_rate):
 
 #---------------------------------------------------- functions in training stage 1 ----------------------------------------------------------------------
 def train_arl(epoch, data_loader, model, optimizer, opt):
-    acc1_v = AverageMeter('Acc@1', ':6.2f')
-    acc5_v = AverageMeter('Acc@5', ':6.2f')
-    acc1_s = AverageMeter('Acc@1', ':6.2f')
-    acc5_s = AverageMeter('Acc@5', ':6.2f')
+    # ===== meters (保留原本 losses) =====
     losses = AverageMeter('Loss', ':.4e')
-    
-    hit_cls = np.zeros(opt.num_cls)
+    loss_sem_meter = AverageMeter('Loss_sem', ':.4e')
+    loss_stn_meter = AverageMeter('Loss_stn', ':.4e')
 
     model.train()
     total_time = time.time()
-    
+
+    # ===== STN loss weights (保留原本) =====
     theta_scale_upperbound = opt.tsu
     theta_scale_lowerbound = opt.tsl
     weight_upper_loss = opt.wul
@@ -41,52 +39,89 @@ def train_arl(epoch, data_loader, model, optimizer, opt):
     weight_anti_outlier_loss_shift = opt.waols
     weight_anti_outlier_loss_bounds = opt.waolb
     weight_rotate_loss = opt.wrl
+
+    # ===== regression loss =====
+    mse = torch.nn.MSELoss()
+
     for batch_idx, (data, label) in enumerate(data_loader):
-        start_time = time.time()           
-        [img, words] = data
-        # prediction and loss
+        start_time = time.time()
+
+        # data = [img, vf_vec]
+        img, vf_vec = data
         batch_size_cur = img.size(0)
 
-        img = img.cuda()
-        label = label.cuda()
-        #perform prediction
-        
-        output_s, _, hidden_vectors, theta_list = model(img, opt.dataset_max_seq)
-        
-        loss_cls_s, batch_vector, label_word, seq_len_list, theta = loss.loss_for_gru_prediction(output_s, words, theta_list)
-        loss_cls_s = loss_cls_s * opt.w_semantic
-        
-        scale_upperbound_loss = loss.get_scale_upperbound_loss([theta[:,0,0], theta[:,1,1]], theta_scale_upperbound, weight_upper_loss)
-        scale_lowerbound_loss = loss.get_scale_lowerbound_loss([theta[:,0,0], theta[:,1,1]], theta_scale_lowerbound, weight_lower_loss)
-        
-        anti_outlier_loss_shift = loss.get_anti_outlier_loss([theta[:,0,2], theta[:,1,2]], weight_anti_outlier_loss_bounds)
-        anti_outlier_loss_bounds = loss.get_anti_outlier_loss([theta[:,0,0], theta[:,1,1]], weight_anti_outlier_loss_shift)
+        if torch.cuda.is_available():
+            img = img.cuda(non_blocking=True)
+            vf_vec = vf_vec.cuda(non_blocking=True)
+            label = label.cuda(non_blocking=True)
 
-        diverse_loss = loss.get_diverse_loss([theta[:,0,2], theta[:,1,2]], seq_len_list, weight_diverse_loss)
-        rotate_loss = torch.mean((torch.abs(theta[:,0,1]) + torch.abs(theta[:,1,0])) * 0.5) * weight_rotate_loss
-        loss_stn = scale_upperbound_loss + scale_lowerbound_loss + diverse_loss + anti_outlier_loss_shift + anti_outlier_loss_bounds + rotate_loss
-        final_loss = loss_cls_s + loss_stn
-            
-        # optimization
-        losses.update(final_loss.item(), batch_size_cur)
-        
-        optimizer.zero_grad()
+        # ---- forward ----
+        # 你已修改 ARL forward：
+        # return predicts_t, x_fm, hidden_vectors, theta_list, pred_vf
+        output_s, _, hidden_vectors, theta_list, pred_vf = model(img, opt.dataset_max_seq)
+
+        # ---- semantic regression loss (替代 GRU CE) ----
+        loss_sem = mse(pred_vf, vf_vec)
+        # 若你想保留權重超參數（沿用 opt.w_semantic）
+        if hasattr(opt, "w_semantic"):
+            loss_sem = loss_sem * opt.w_semantic
+
+        # ---- STN regularization loss (保留原本) ----
+        # theta_list -> theta (你原本用 loss_for_gru_prediction 取 theta)
+        # 現在我們直接從 theta_list 組出 theta：
+        # theta_list 是一個 list，每個 step 的 theta shape 通常是 (B, 2, 3)
+        # 我們取第一個 step 的 theta 來做約束（最小可行且穩）
+        if isinstance(theta_list, (list, tuple)) and len(theta_list) > 0:
+            theta = theta_list[0]
+        else:
+            theta = None
+
+        if theta is not None:
+            scale_upperbound_loss = loss.get_scale_upperbound_loss(
+                [theta[:, 0, 0], theta[:, 1, 1]], theta_scale_upperbound, weight_upper_loss
+            )
+            scale_lowerbound_loss = loss.get_scale_lowerbound_loss(
+                [theta[:, 0, 0], theta[:, 1, 1]], theta_scale_lowerbound, weight_lower_loss
+            )
+
+            anti_outlier_loss_shift = loss.get_anti_outlier_loss(
+                [theta[:, 0, 2], theta[:, 1, 2]], weight_anti_outlier_loss_bounds
+            )
+            anti_outlier_loss_bounds = loss.get_anti_outlier_loss(
+                [theta[:, 0, 0], theta[:, 1, 1]], weight_anti_outlier_loss_shift
+            )
+
+            # diverse_loss 原本需要 seq_len_list；現在沒有 seq_len_list，先用 batch_size 當 dummy 長度
+            # 最小可行：直接關掉 diverse_loss（設 0）
+            diverse_loss = 0.0
+
+            rotate_loss = torch.mean((torch.abs(theta[:, 0, 1]) + torch.abs(theta[:, 1, 0])) * 0.5) * weight_rotate_loss
+            loss_stn = scale_upperbound_loss + scale_lowerbound_loss + anti_outlier_loss_shift + anti_outlier_loss_bounds + rotate_loss
+        else:
+            loss_stn = torch.tensor(0.0, device=img.device)
+
+        final_loss = loss_sem + loss_stn
+
+        # ---- optimization ----
+        optimizer.zero_grad(set_to_none=True)
         final_loss.backward()
         optimizer.step()
-        
-        # upddate log  
-        [acc_top1, acc_top5],_ = accuracy_hit(batch_vector, label_word, opt.num_words, topk=(1, 5))
-        acc1_s.update(acc_top1[0], batch_size_cur)
-        acc5_s.update(acc_top5[0], batch_size_cur)
-        
-        log_out = ('Epoch: [{0}][{1}/{2}], lr: {lr:.5f}\t'
-                  'Time {data_time:.3f}\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                   'loss_s:{loss_s:.4f}, loss_other:{loss_stn:.4f}\t'
-                   'Acc@1s {acc1_s.val:.4f} ({acc1_s.avg:.4f})\t'
-                  'Acc@5s {acc5_s.val:.4f} ({acc5_s.avg:.4f})\t'.format(
-            epoch, batch_idx, len(data_loader), data_time=round((time.time() - total_time), 4), loss=losses, loss_s=loss_cls_s.item(), loss_stn=loss_stn.item(), acc1_s=acc1_s, acc5_s=acc5_s, lr=optimizer.param_groups[-1]['lr']))
-        print(log_out)
+
+        # ---- meters ----
+        losses.update(final_loss.item(), batch_size_cur)
+        loss_sem_meter.update(loss_sem.item(), batch_size_cur)
+        loss_stn_meter.update(loss_stn.item() if torch.is_tensor(loss_stn) else float(loss_stn), batch_size_cur)
+
+        if batch_idx % 20 == 0:
+            log_out = (
+                f"[ARL-Reg] Epoch [{epoch}][{batch_idx}/{len(data_loader)}] "
+                f"Time {(time.time()-start_time):.3f} "
+                f"Loss {losses.val:.6f} ({losses.avg:.6f}) "
+                f"loss_sem {loss_sem_meter.val:.6f} ({loss_sem_meter.avg:.6f}) "
+                f"loss_stn {loss_stn_meter.val:.6f} ({loss_stn_meter.avg:.6f}) "
+                f"lr {optimizer.param_groups[-1]['lr']:.6f}"
+            )
+            print(log_out)
 
 def collect_feature_word_label(predicts_t, hidden_vectors, words, labels, theta_list):
     # get valid entries

@@ -23,19 +23,25 @@ opt = opts.opt_algorithm()
 # Step 3: Filtering the clusters and creating the Hierarhcy
 #----------------------
 
-#------Settings------
-opt.dataset = 'food101'
-opt.word_net = 'gru'
 
-opt.modality='v+s'
-opt.path_root = '/data_food101/' # path to root folder
-opt.path_img = '/data_images_food101/'# path to image folder
-opt.path_data = opt.path_root # path to data folder
-opt.path_class_name = opt.path_data + 'classes.txt'# path to the list of names for classes
-opt.num_cls = 101 # number of classes in the dataset
-opt.dataset_max_seq = 25 # max number of words for a sample in train data
-opt.num_words = 446 # number of words in the dataset
-opt.size_img = [384, 384]
+# ---------------- Settings (fundus_vf) ----------------
+opt.dataset  = 'fundus_vf'
+opt.word_net = 'gru'
+opt.modality = 'v+s'
+
+# Paths
+opt.path_root = '/home/tim/projects/VSCNet/data_fundus_vf/'          
+opt.path_data = opt.path_root                                       
+opt.path_img  = ''   
+opt.path_class_name = os.path.join(opt.path_root, 'classes.txt')     
+
+# Dataset
+opt.num_cls = 4
+opt.dataset_max_seq = 25
+opt.num_words = 446
+# opt.batch_size = 16
+# Image
+opt.size_img = [256, 256]  
 
 # basic
 CUDA = 1  # 1 for True; 0 for False
@@ -52,12 +58,12 @@ prepare_intermediate_folders(result_path)
 model_save_path = 'model_save/{}/'.format(opt.net_v)
 prepare_intermediate_folders(model_save_path)
 #train settings
-EPOCHS = opt.lr_decay * 3 + 1
+EPOCHS = 3
     
 #----------------------------------------Step 1: Training ARL model for paring visual region and semantic tags-------------------------------------------
 # dataset
 transform_img_train = transforms.Compose([
-    transforms.Resize([384, 384]),
+    transforms.Resize([256, 256]),
     transforms.ToTensor(),])
 
 # create dataset

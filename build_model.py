@@ -121,8 +121,18 @@ class ARL(nn.Module):
         self.dim_v = dim_v
         
         # classifiers
+        # 原始設計：
+        # word_classifier 用於語意分類（例如 food ingredient 預測）
+        # 將隱藏向量轉為 num_words 維度的語意輸出
         self.word_classifier = nn.Linear(dim_v, num_words)
-        
+
+        # VF regression head：
+        # 先使用 Global Average Pooling 將 CNN feature map 壓縮成
+        # 一個特徵向量，再透過 Linear layer 將影像特徵轉換為
+        # 4 個臨床視野指標的預測值（VFI、MD、PSD、GHT）。
+        self.vf_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.vf_head = nn.LazyLinear(4)   
+                
         # initialize
         self._initialize_weights()
         
@@ -131,21 +141,27 @@ class ARL(nn.Module):
         # word decoder
         self.word_decoder = word_decoder_STN(CUDA, self.dim_v, self.img_encoder)
 
-    def forward(self, x, max_seq_batch):  # x:image, max_seq_batch: max_seq of current batch
-        # get img feature maps
+    def forward(self, x, max_seq_batch):
+        
+        #影像特徵抽取
         x_fm = self.img_encoder(x)
-        # decode to hidden vectors (seq, batch, latent_len) for individual words
+
+        pred_vf = self.vf_head(self.vf_pool(x_fm).flatten(1))
+
         hidden_vectors, theta_list = self.word_decoder(x_fm, max_seq_batch)
-   
-        # compute word prediction (seq, batch, latent_len) -> (batch, seq, num_words)
         predicts_t = self.word_classifier(hidden_vectors.transpose(0, 1))
 
-        return predicts_t, x_fm, hidden_vectors, theta_list
-    
+        return predicts_t, x_fm, hidden_vectors, theta_list, pred_vf
+        
     def _initialize_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)  
+                if hasattr(m, "weight") and m.weight is not None and not isinstance(
+                    m.weight, torch.nn.parameter.UninitializedParameter
+                ):
+                    nn.init.normal_(m.weight, 0, 0.01)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0) 
 
 
 
@@ -417,10 +433,10 @@ class FeatureFusion(nn.Module):
 def select_visual_network(img_net_type, image_size,opt,return_fm=False):
     if img_net_type == 'resnet50':
         from model.resnet import resnet50
-        img_encoder = resnet50(image_size, pretrained=True, return_fm=return_fm)
+        img_encoder = resnet50(image_size, pretrained=False, return_fm=return_fm)
     elif img_net_type == 'resnet18':
         from model.resnet import resnet18
-        img_encoder = resnet18(image_size, pretrained=True, return_fm=return_fm)
+        img_encoder = resnet18(image_size, pretrained=False, return_fm=return_fm)
     elif img_net_type == 'vit':
         import model.model_ViT as ViT
         img_encoder = ViT.VisionTransformer(image_size=(384, 384),patch_size=(32, 32),return_fm=return_fm)
