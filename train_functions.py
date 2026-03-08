@@ -56,21 +56,14 @@ def train_arl(epoch, data_loader, model, optimizer, opt):
             label = label.cuda(non_blocking=True)
 
         # ---- forward ----
-        # 你已修改 ARL forward：
-        # return predicts_t, x_fm, hidden_vectors, theta_list, pred_vf
         output_s, _, hidden_vectors, theta_list, pred_vf = model(img, opt.dataset_max_seq)
 
-        # ---- semantic regression loss (替代 GRU CE) ----
+        # ---- semantic regression loss ----
         loss_sem = mse(pred_vf, vf_vec)
-        # 若你想保留權重超參數（沿用 opt.w_semantic）
         if hasattr(opt, "w_semantic"):
             loss_sem = loss_sem * opt.w_semantic
 
-        # ---- STN regularization loss (保留原本) ----
-        # theta_list -> theta (你原本用 loss_for_gru_prediction 取 theta)
-        # 現在我們直接從 theta_list 組出 theta：
-        # theta_list 是一個 list，每個 step 的 theta shape 通常是 (B, 2, 3)
-        # 我們取第一個 step 的 theta 來做約束（最小可行且穩）
+        # ---- STN regularization loss ----
         if isinstance(theta_list, (list, tuple)) and len(theta_list) > 0:
             theta = theta_list[0]
         else:
@@ -91,8 +84,6 @@ def train_arl(epoch, data_loader, model, optimizer, opt):
                 [theta[:, 0, 0], theta[:, 1, 1]], weight_anti_outlier_loss_shift
             )
 
-            # diverse_loss 原本需要 seq_len_list；現在沒有 seq_len_list，先用 batch_size 當 dummy 長度
-            # 最小可行：直接關掉 diverse_loss（設 0）
             diverse_loss = 0.0
 
             rotate_loss = torch.mean((torch.abs(theta[:, 0, 1]) + torch.abs(theta[:, 1, 0])) * 0.5) * weight_rotate_loss
@@ -122,6 +113,25 @@ def train_arl(epoch, data_loader, model, optimizer, opt):
                 f"lr {optimizer.param_groups[-1]['lr']:.6f}"
             )
             print(log_out)
+
+    epoch_time = time.time() - total_time
+
+    print(
+        f"[ARL-Reg][Epoch Summary] Epoch {epoch} "
+        f"Loss {losses.avg:.6f} "
+        f"loss_sem {loss_sem_meter.avg:.6f} "
+        f"loss_stn {loss_stn_meter.avg:.6f} "
+        f"lr {optimizer.param_groups[-1]['lr']:.6f} "
+        f"epoch_time {epoch_time:.3f}s"
+    )
+
+    return {
+        "loss": losses.avg,
+        "loss_sem": loss_sem_meter.avg,
+        "loss_stn": loss_stn_meter.avg,
+        "lr": optimizer.param_groups[-1]["lr"],
+        "epoch_time": epoch_time,
+    }
 
 def collect_feature_word_label(predicts_t, hidden_vectors, words, labels, theta_list):
     # get valid entries
@@ -173,7 +183,7 @@ def generate_feature_arl(data_loader, model, mode, opt):
             img = img.cuda(non_blocking=True)
             label = label.cuda(non_blocking=True)
             #perform prediction
-            output_s, _,hidden_vectors, theta_list = model(img, opt.dataset_max_seq)
+            output_s, _, hidden_vectors, theta_list, _ = model(img, opt.dataset_max_seq)
             
             predicts_cur, hidden_vectors_cur, label_word, label_cls, theta = collect_feature_word_label(output_s, hidden_vectors.transpose(0,1), words, label, theta_list)
             # upddate log

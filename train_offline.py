@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+
+
 import io
 import os
 import os.path
@@ -14,6 +16,11 @@ import build_dataset
 from torch import optim
 from utils import *
 import train_functions
+
+from torch.utils.tensorboard import SummaryWriter
+import os
+from datetime import datetime
+
 #load environmental settings
 import opts
 opt = opts.opt_algorithm()
@@ -79,6 +86,16 @@ opt.method = 'arl'
 model_arl = build_model.build(CUDA,opt)
 optimizer_arl = train_functions.set_optimizer(model_arl,opt)
 
+# TensorBoard writer
+run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
+log_dir = os.path.join("runs", f"offline_{run_name}")
+os.makedirs(log_dir, exist_ok=True)
+writer = SummaryWriter(log_dir=log_dir)
+print("TensorBoard log dir:", log_dir)
+
+# debug test
+writer.add_scalar("debug/start", 1, 0)
+
 if opt.net_v=='resnet18':
     dim_feat_v = 512
 elif opt.net_v=='resnet50':
@@ -89,7 +106,13 @@ elif opt.net_v=='vit':
 # ARL training
 for epoch in range(1, EPOCHS + 1):
     train_functions.lr_scheduler(epoch, optimizer_arl, opt.lr_decay, opt.lrd_rate)
-    train_functions.train_arl(epoch, train_loader, model_arl, optimizer_arl, opt)
+    train_log = train_functions.train_arl(epoch, train_loader, model_arl, optimizer_arl, opt)
+
+    writer.add_scalar("train/loss", train_log["loss"], epoch)
+    writer.add_scalar("train/loss_sem", train_log["loss_sem"], epoch)
+    writer.add_scalar("train/loss_stn", train_log["loss_stn"], epoch)
+    writer.add_scalar("train/lr", train_log["lr"], epoch)
+    writer.add_scalar("train/epoch_time", train_log["epoch_time"], epoch)
 
 torch.save(model_arl.state_dict(), model_save_path + 'model_arl.pt')
 train_functions.generate_feature_arl(train_loader, model_arl, 'train', opt)
@@ -179,3 +202,5 @@ for i in range(J):
     if i in valid_cluster_IDs:
         data_valid_id = np.where(data_assign == i)[0]
         data_valid_IDs.extend(list(data_valid_id))
+
+writer.close()

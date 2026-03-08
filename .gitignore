@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+
+runs/
+result/
+
+offline_log.txt
+
+model_save/
+
+*.npy
