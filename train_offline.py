@@ -152,55 +152,73 @@ W, J, L, rhos, cluster_label_indicators = net['W'], net['J'], net['L'], net['rho
 data_assign = torch.tensor(np.load(cluster_path + 'data_Assign_' + str(epoch) + '.npy'))
 L = torch.tensor(L)
 
-print('Epoach {}: Number of clusters: {} | max_size: {} | cluster_size>1: {} | cluster_size>2: {}'.format(epoch, J, torch.max(L), len(torch.nonzero(L > 0)[:,0].view(-1)), len(torch.nonzero(L > 1)[:,0].view(-1))))
+print('Epoch {}: Number of clusters: {} | max_size: {} | cluster_size>1: {} | cluster_size>2: {}'.format(
+    epoch, J, torch.max(L), len(torch.nonzero(L > 0)[:, 0].view(-1)), len(torch.nonzero(L > 1)[:, 0].view(-1))
+))
 
-classIDs = np.array(np.load(opt.result_path+'/hidden_vector_classIDs.npy'))  # patch class label
-cls_size = torch.sum(F.one_hot(data_assign.long()),dim=0).cpu().numpy().astype(float)
+classIDs = np.array(np.load(opt.result_path + '/hidden_vector_classIDs.npy'))  # patch class label
 
-nonempty_cluster_IDs = torch.nonzero(L > 1)[:,0].view(-1)
+nonempty_cluster_IDs = torch.nonzero(L > 1)[:, 0].view(-1)
 
-valid_cluster_IDs = []  # save Clusters ID with dominant categories
+valid_cluster_IDs = []   # save cluster IDs with dominant categories
 valid_cluster_class = []
-invalid_cluster_class = []
 
 for clusterid in nonempty_cluster_IDs:
-    patch_id = np.where(data_assign==int(clusterid))[0]  # patch ID assigned to cluster j
-    class_id = classIDs[patch_id]  # patch - classID
+    clusterid_int = int(clusterid.item())
 
-    cluster_class = list(set(class_id))   # classID in cluster
+    patch_id = np.where(data_assign.cpu().numpy() == clusterid_int)[0]   # patch IDs assigned to cluster j
+    class_id = classIDs[patch_id]   # patch -> classID
 
-    cluster_class_size = [len(np.where(class_id==k)[0]) for k in cluster_class]   # class size in cluster
-    cluster_class_size_max = cluster_class[np.argmax(cluster_class_size)]   # max class in cluster
-    lk = len(np.where(class_id == cluster_class_size_max)[0])# max class size in cluster
-    # have dominant class
-    if lk/cls_size[clusterid] >= opt.art_P_T:
-        print('dominant_rate: {}, cluster_ID: {}, dominant_class: {}'.format(lk/cls_size[clusterid], clusterid, cluster_class_size_max))
-        valid_cluster_IDs.append(clusterid)
+    if len(class_id) == 0:
+        continue
+
+    cluster_class = list(set(class_id))   # classIDs in this cluster
+    cluster_class_size = [len(np.where(class_id == k)[0]) for k in cluster_class]
+
+    cluster_class_size_max = cluster_class[np.argmax(cluster_class_size)]   # dominant class
+    lk = np.max(cluster_class_size)   # dominant class count
+    cluster_total = len(patch_id)     # total samples in this cluster
+
+    if lk / cluster_total >= opt.art_P_T:
+        print('dominant_rate: {}, cluster_ID: {}, dominant_class: {}'.format(
+            lk / cluster_total, clusterid_int, cluster_class_size_max
+        ))
+        valid_cluster_IDs.append(clusterid_int)
         valid_cluster_class.append(cluster_class_size_max)
-# save cluster with dominant class 
-print(len(valid_cluster_IDs))
-np.save(cleaned_path+'network_'+str(epoch)+'_valid_cluster_IDs.npy', np.array(valid_cluster_IDs))
-np.save(cleaned_path+'network_'+str(epoch)+'_valid_cluster_class.npy', np.array(valid_cluster_class))
 
-# clean the network by removing the empty clusters
+# save clusters with dominant class
+print("num valid clusters:", len(valid_cluster_IDs))
+valid_cluster_IDs = np.array(valid_cluster_IDs, dtype=np.int64)
+valid_cluster_class = np.array(valid_cluster_class)
+
+np.save(cleaned_path + 'network_' + str(epoch) + '_valid_cluster_IDs.npy', valid_cluster_IDs)
+np.save(cleaned_path + 'network_' + str(epoch) + '_valid_cluster_class.npy', valid_cluster_class)
+
+# clean the network by removing invalid / empty clusters
 W_new = W[valid_cluster_IDs]
 L_new = L[valid_cluster_IDs]
 cluster_label_indicators_new = cluster_label_indicators[valid_cluster_IDs]
 J_new = len(valid_cluster_IDs)
 
-np.savez(cleaned_path + 'cleaned_networks_' + str(epoch) + '.npz', W_new=W_new, J_new=J_new, L_new=L_new,
-         cluster_label_indicators_new=cluster_label_indicators_new)
+np.savez(
+    cleaned_path + 'cleaned_networks_' + str(epoch) + '.npz',
+    W_new=W_new,
+    J_new=J_new,
+    L_new=L_new,
+    cluster_label_indicators_new=cluster_label_indicators_new
+)
 
-data_assign = torch.tensor(np.load(cluster_path + 'data_Assign_'+ str(epoch) + '.npy'))
-hidden_vector_scaled = np.load(opt.result_path+'/scaled_hidden_vectors.npy') 
-hidden_vector_wordIDs = np.load(opt.result_path+'/hidden_vector_wordIDs.npy')
-hidden_vector_classIDs = np.load(opt.result_path+'/hidden_vector_classIDs.npy')
+data_assign = torch.tensor(np.load(cluster_path + 'data_Assign_' + str(epoch) + '.npy'))
+hidden_vector_scaled = np.load(opt.result_path + '/scaled_hidden_vectors.npy')
+hidden_vector_wordIDs = np.load(opt.result_path + '/hidden_vector_wordIDs.npy')
+hidden_vector_classIDs = np.load(opt.result_path + '/hidden_vector_classIDs.npy')
 
 data_valid_IDs = []
-valid_cluster_IDs = np.load(cleaned_path+'network_'+str(epoch)+'_valid_cluster_IDs.npy')
+valid_cluster_IDs = np.load(cleaned_path + 'network_' + str(epoch) + '_valid_cluster_IDs.npy')
+
 for i in range(J):
     if i in valid_cluster_IDs:
-        data_valid_id = np.where(data_assign == i)[0]
+        data_valid_id = np.where(data_assign.cpu().numpy() == i)[0]
         data_valid_IDs.extend(list(data_valid_id))
 
 writer.close()
